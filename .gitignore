@@ -1,0 +1,8 @@
+# Large generated trajectories and dumps
+*.lammpstrj
+dump_*
+slurm-*.out
+*.restart
+
+# Python cache
+__pycache__/
