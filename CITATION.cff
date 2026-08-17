@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this data, please cite the associated manuscript."
+authors:
+  - family-names: Tan
+    given-names: Fusheng
+  - family-names: Zhao
+    given-names: Qingkun
+  - family-names: Qiu
+    given-names: Tianxu
+title: "W-Re grain-boundary segregation and tensile molecular dynamics data"
+license: CC-BY-4.0
+year: 2026
