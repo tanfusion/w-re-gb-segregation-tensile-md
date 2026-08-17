@@ -1,0 +1,7 @@
+# Generate a single-crystal W reference cell with ATOMSK
+atomsk --create bcc 3.14 W orient [100] [010] [001] W_SC.xsf
+
+# Build a polycrystalline W model from a Voronoi seed file
+# Box: 200 x 200 x 200 Angstrom; replace <seed_file> and <output_name>
+# for each grain size (see seeds/ and size_distributions/).
+atomsk --polycrystal W_SC.xsf <seed_file> <output_name>.lmp -wrap
