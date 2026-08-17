@@ -1,0 +1,200 @@
+# 计算拉伸后晶界属性和偏聚度。
+# Calculate grain boundary excess properties, according to "10.1103/PhysRevMaterials.2.093603"
+# .data file is generated from other in.file
+# Created by Fusheng Tan (tanfusheng@hnu.edu.cn), 2020-05-29
+
+### Initialization 
+units  metal
+dimension  3
+boundary  p  p  p 
+atom_style  atomic
+neighbor  4.0  bin    #check the bin to see if the result is convergent
+neigh_modify  delay  5  check  yes
+
+
+#---------------------- Create GB with different [hkl](mno) --------------------      
+## define the GB plane [hkl](mno)
+# [001]
+variable h equal 0
+variable k equal 0
+variable l equal 1
+variable m equal 2
+variable n equal 1
+variable o equal 0
+
+# The number of single cell in x y z directions
+variable nx equal  6
+variable ny equal 10
+variable nz equal 6
+
+variable  latconst  equal  3.14	
+
+variable  spacex equal ${latconst}*sqrt($m^2+$n^2+$o^2)
+variable  spacey equal ${latconst}*sqrt(($k*$o-$l*$n)^2+($l*$m-$h*$o)^2+($h*$n-$k*$m)^2)
+variable  spacez equal ${latconst}*sqrt($h^2+$k^2+$l^2)
+
+variable N equal $h^2+$k^2+$l^2
+variable CSL_xigema equal $m^2+$N*$n^2
+variable misorientation equal 2*atan($N^(1/2)*($n/$m))*180/PI
+
+variable  sizex  equal  ${nx}*${spacex}
+variable  sizey  equal  ${ny}*${spacey}
+variable  sizez  equal  ${nz}*${spacez}
+
+variable GBy equal ${sizey}*0.5  # 晶界位置
+
+#----------------------  Model  --------------------      
+#lattice  bcc  ${latconst}
+region  box  block  0   ${sizex}  0  ${sizey}  0  ${sizez}  units  box
+create_box  2  box
+
+region  upper  block  INF  INF  ${GBy}  INF  INF  INF  units  box
+#lattice  bcc  ${latconst}  orient  x  3 1 0  orient  y  -1 3 0  orient  z  0 0 1  
+lattice  bcc  ${latconst}  orient  x  $m $n $o  orient  y  -$n $m $o  orient  z  $h $k $l 
+create_atoms  1  region  upper
+
+region  lower  block  INF  INF  INF  ${GBy} INF  INF  units  box
+#lattice  bcc  ${latconst}  orient  x   3 -1 0  orient  y  1 3 0  orient  z  0 0 1
+lattice  bcc  ${latconst}  orient  x  $m -$n $o  orient  y $n $m $o   orient  z  $h $k $l   
+create_atoms  1  region  lower
+
+group  upper region upper
+group  lower region lower
+
+# 晶粒内区域
+variable  grain_y1  equal   ${sizey}*0.25
+variable  grain_y2  equal   ${sizey}*0.35
+region  grain_region  block  INF  INF  ${grain_y1}  ${grain_y2}   INF  INF  units  box
+group   grain_region  region  grain_region
+
+#晶界区域
+variable  GB_y1  equal   ${sizey}*0.5-2
+variable  GB_y2  equal   ${sizey}*0.5-1
+region   GB_region block  INF  INF  ${GB_y1}  ${GB_y2}   INF  INF  units  box
+group   GB_region  region  GB_region
+
+########### Interatomic potential #################
+pair_style     eam/alloy
+pair_coeff    *  *  WRe_Bonny2017.eam.alloy  W  Re
+
+########### displace atoms or delete atoms ##############
+
+variable atomic_distance equal sqrt(3)/2*${latconst}  # BCC晶格的最近邻原子间距
+variable del_cutoff equal  0.65*${atomic_distance}
+
+#displace_atoms  upper  move  0  0  0  units  lattice  # 固定上层晶粒，以确保晶界位置不变（“零位移”本质是固定上层晶粒的变通方案）
+#delete_atoms  overlap  ${del_cutoff}  lower  upper	 # 删除组间重叠原子
+delete_atoms  overlap  ${del_cutoff}  all  all	 # 删除组间重叠原子
+
+############### Setting ##################
+compute  eatom  all  pe/atom
+compute  pe_all all reduce sum c_eatom     # 计算模型总势能
+
+
+####### 纯金属模型
+### Minimization 
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  1  all  box/relax  y  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   sigma${CSL_xigema}[$h_$k_$l]($m_$n_$o)-minimization1.data
+
+unfix  1
+
+run 0
+
+# 记录此时总势能
+variable pe_allv1 equal c_pe_all		# 将compute计算出来的模型总势能 赋予变量 pe_all_v
+variable peall_1 equal ${pe_allv1}		# 将该时刻的值记录下来
+ 
+print "---------------------------------------------------------------"
+print "total_PE1 = ${peall_1} eV"
+print "---------------------------------------------------------------"
+
+
+####### 将一个溶质原子放在晶粒内
+# type/subset values = type Nsubset seed
+set  group  grain_region  type/subset  2  1  1111111
+
+### Minimization 
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  1  all  box/relax  y  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   sigma${CSL_xigema}[$h_$k_$l]($m_$n_$o)-minimization2.data
+
+unfix  1
+
+run 0
+
+# 记录此时总势能
+variable pe_allv2 equal c_pe_all		# 将compute计算出来的模型总势能 赋予变量 pe_all_v
+variable peall_2 equal ${pe_allv2}		# 将该时刻的值记录下来
+
+print "---------------------------------------------------------------"
+print "total_PE2 = ${peall_2} eV"
+print "---------------------------------------------------------------"
+
+# 将溶质替换回溶剂原子
+set  type  2  type  1 
+
+####### 将一个溶质原子放在晶界内
+# type/subset values = type Nsubset seed
+set  group  GB_region  type/subset  2  1  2222222
+
+### Minimization 
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  1  all  box/relax  y  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   sigma${CSL_xigema}[$h_$k_$l]($m_$n_$o)-minimization3.data
+
+unfix  1
+run 0
+
+# 记录此时总势能
+variable pe_allv3 equal c_pe_all		# 将compute计算出来的模型总势能 赋予变量 pe_all_v
+variable peall_3 equal ${pe_allv3}		# 将该时刻的值记录下来
+
+print "---------------------------------------------------------------"
+print "total_PE3 = ${peall_3} eV"
+print "---------------------------------------------------------------"
+
+# 将溶质替换回溶剂原子
+set  type  2  type  1
+
+
+####### 计算偏聚能
+variable		E_Seg  equal   ${peall_3}-${peall_2}
+
+print "---------------------------------------------------------------"
+print "Segregation energy E_Seg = ${E_Seg} eV"
+print "---------------------------------------------------------------"
+
+
+
+
+
+
+
