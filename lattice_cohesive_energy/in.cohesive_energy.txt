@@ -1,0 +1,51 @@
+#find the most equilibrium latconst and cohesive energy
+
+############### initialization #################
+clear 
+units        metal 
+dimension    3
+boundary     p  p  p
+atom_style    atomic
+atom_modify  map  array  
+neighbor       2.0  bin
+neigh_modify   delay  10  check  yes 
+
+#variable latconst equal 3.69
+#variable  seed  equal  12322
+
+############### create atoms #################
+lattice   bcc  ${latconst}
+variable  size  equal  10
+region  box  block  0   ${size}  0  ${size}  0  ${size}
+create_box  2  box
+
+mass  1  183.84		#W BCC  3.14
+mass  2  186.2069	#Re  HCP  2.761 
+
+lattice       bcc  ${latconst}  orient  x 1 0 0  orient  y 0 1 0  orient  z 0 0 1
+create_atoms  1  box
+
+set		type  1   type/ratio  2  0.2  ${seed}  #算出来W80-Re20的晶格常数3.12
+
+############### define interatomic potential ################
+pair_style     eam/alloy
+pair_coeff     *  *  WRe_Bonny2017.eam.alloy  W  Re
+
+run  0
+
+variable     natoms  equal  "count(all)"       #总原子数
+variable     teng  equal  "pe"           #总原子势能
+variable     length  equal  "lx"               #盒子长度
+variable     final_latconst  equal  "v_length/v_size"  #晶格常数
+variable     ecoh  equal  "v_teng/v_natoms"    #单原子势能，即内聚能
+
+print        "Total energy = ${teng}"
+print        "Number of atoms = ${natoms}"
+print        "Final size (Angstoms) = ${length}"
+print        "Lattice constant (Angstoms) = ${final_latconst}"
+print        "Cohesive energy (eV) = ${ecoh}"
+print        "%%ecoh = ${ecoh};"
+
+print        "All done!"
+
+write_data   Model_latconst_${latconst}.data
