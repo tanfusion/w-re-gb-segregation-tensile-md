@@ -1,0 +1,185 @@
+# 读取双晶模型，模拟晶界剪切变形【2026年3月10日】
+# Created by Fusheng Tan (tanfs6896@163.com), 2020-05-29
+
+### Initialization 
+units  metal
+dimension  3
+boundary  p  p  p   # 在周期性边界条件下进行晶界弛豫
+atom_style  atomic
+neighbor  6.0  bin    #check the bin to see if the result is convergent
+neigh_modify  delay  5  check  yes
+
+read_data	WRe_SGMC_Model_noSeg.data
+
+#------------------------- Pre setting -------------------------
+#驰豫和迁移温度
+variable Temp  equal 300 
+
+variable  relax_step1  equal  50000 
+variable  relax_step2  equal  50000
+variable  deform_step  equal  500000
+
+#上下两端slab的位置和剪切的速度
+variable size_y equal yhi-ylo
+variable layer_thickness equal 10
+variable top_layer_limit  equal  yhi-${layer_thickness}
+variable bot_layer_limit  equal  ylo+${layer_thickness}
+variable layer_velocity  equal  0.00001*(2*${size_y}-2*${layer_thickness})   #shear strain rate = 1E9 / s  
+
+#划分晶界和slab的区域
+region toplayer block INF INF ${top_layer_limit} INF INF INF   units box       #上层slab
+region botlayer block INF INF INF ${bot_layer_limit} INF INF  units box        #下层slab 
+group toplayer region toplayer
+group botlayer region botlayer 
+
+group boundary union botlayer toplayer
+group mobile subtract all boundary
+
+############### Setting ##################
+compute  eatom  all  pe/atom
+compute  perstress  all stress/atom  thermo_temp
+
+compute new3d mobile temp  # temperature considering three directions
+compute new2d mobile temp/partial 0 1 1   #不考虑原子X方向的速度，计算出来的温度
+
+#--------------------------  输出thermo, dump等  --------------------------
+thermo        100
+timestep      0.001
+thermo_style    custom step pe ke pxy 
+
+### Interatomic potential
+pair_style     eam/alloy
+pair_coeff    *  *  WRe_Bonny2017.eam.alloy  W  Re
+
+################ Run minimization 1 ##########################
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+#fix  1  all  box/relax  iso  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   Model_Minimization1.data
+
+#unfix  1
+
+#################Rum minimization 2 ######################
+#Now allow the box to expand/contract in all directions
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  2  all  box/relax  iso  0  vmax  0.001
+
+#dump  2  all  custom 10000 dump.minimization2.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000  10000
+#undump 2
+
+write_data   Model_Minimization2.data
+
+unfix  2
+
+print  "---------- Minimization 2  is done -----------"
+
+
+################# Rum minimization 3 ######################
+#Now allow the box to expand/contract perpendicular to the GB
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  3  all  box/relax  y  0  vmax  0.001
+
+#dump  3  all  custom 10000 dump.minimization3.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000  10000
+#undump 3
+
+write_data   Model_Minimization3.data
+
+unfix  3
+
+print  "---------- Minimization 3  is done -----------"
+
+
+########################### Relaxation ################################ 
+# ### Step1:  release the pressure in all direction, let the model expands 
+
+velocity  all create ${Temp} 233333 dist gaussian units box 
+
+reset_timestep 0
+
+timestep 0.001
+thermo  100
+thermo_style custom step temp pe press pxx pyy pzz
+
+dump  1  all  custom  10000  dump_relax1_${Temp}K.*.lammpstrj  id  type x y z  c_eatom 
+
+fix  1  all  npt  temp  ${Temp}  ${Temp}  0.1  iso 0 0 1   #Tdamp=100*dt; Pdamp=1000*dt
+run  ${relax_step1}
+
+unfix 1
+undump 1
+
+write_data  Model_Relaxed1.data
+
+print  "---------- 全方位驰豫晶界已完成 -----------"
+
+# ### Step2:  release the pressure in GB direction 
+
+reset_timestep 0
+
+timestep 0.001
+thermo  100
+thermo_style custom step temp pe press pxx pyy pzz
+
+dump  1  all  custom  10000  dump_relax2_${Temp}K.*.lammpstrj  id  type x y z  c_eatom 
+
+fix  1  all  npt  temp  ${Temp}  ${Temp}  0.1  y  0 0 1   #Tdamp=100*dt; Pdamp=1000*dt
+run  ${relax_step2}
+
+unfix 1
+undump 1
+
+write_data  Model_Relaxed2.data
+
+print  "---------- 补充驰豫晶界已完成 -----------"
+
+
+#------------------------- 改变体系边界条件，模拟晶界迁移 ------------------------------
+change_box all boundary p s p            #剪切耦合晶界迁移模拟时需要上下端非周期边界
+
+variable shearstrain equal  step*(1e-6)  # 0.001*step*(1e-12)*(1e9)
+
+reset_timestep	0
+timestep 0.001
+thermo  1000
+thermo_modify  temp new2d 
+thermo_style custom step v_shearstrain temp c_new2d pe pxy 
+
+dump 1 all custom 10000 dump_GBM.*.lammps id type x  y  z  c_eatom  c_perstress[1] c_perstress[2] c_perstress[3] c_perstress[4] c_perstress[5] c_perstress[6]
+
+#NVT系综下积分
+#fix 2  all  nvt  temp  ${Temp }  ${Temp }  0.1 
+fix 1 all nve 
+fix 2 mobile temp/rescale 100 ${Temp } ${Temp } 10 1.0
+fix_modify 2 temp new2d      #采用变形层的温度new2d作为控温标准，可以忽略剪切产生的额外的质心速度
+
+#固定下端slab，移动上端slab
+fix 6  toplayer move linear  ${layer_velocity}   0    0   units box
+fix 7  botlayer move linear  0   0    0   units box  
+
+run ${deform_step}
+write_restart  GBM_${Temp }.restart
+write_data GBM_${Temp }.data
+
+unfix 7
+undump 1 
+
+print "size_y = ${size_y}; 2*size_y = 2*${size_y}; layer_velocity = ${layer_velocity}"
+
