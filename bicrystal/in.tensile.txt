@@ -1,0 +1,183 @@
+# 计算拉伸后晶界属性和偏聚度。
+# Calculate grain boundary excess properties, according to "10.1103/PhysRevMaterials.2.093603"
+# .data file is generated from other in.file
+# Created by Fusheng Tan (tanfusheng@hnu.edu.cn), 2020-05-29
+
+### Initialization 
+units  metal
+dimension  3
+boundary  p  p  p 
+atom_style  atomic
+neighbor  6.0  bin    #check the bin to see if the result is convergent
+neigh_modify  delay  5  check  yes
+
+# ### relaxation setting
+
+variable  Temp equal 300		# 弛豫温度
+
+variable  relax_step1  equal  50000 
+variable  relax_step2  equal  50000
+variable  tensile_step  equal  500000
+
+variable   eng_rate equal -1e-3    # unit is 1/ps, resulting erate = 1E9 / s
+
+# ### import model
+read_data	WRe_SGMC_Model_Seg.data
+
+########### Interatomic potential #################
+#pair_style     meam
+#pair_coeff     *  *  W-Lee2001.library.meam  W  W-Lee2001.parameter.meam  W
+
+pair_style     eam/alloy
+pair_coeff    *  *  WRe_Bonny2017.eam.alloy  W  Re
+
+#pair_style	eam/fs
+#pair_coeff	*  *  WTaHe.eam.fs  W  Ta  He
+
+############### Setting ##################
+compute  eatom  all  pe/atom
+compute  perstress  all stress/atom  thermo_temp
+
+compute new3d all temp  # temperature considering three directions
+compute new2d all temp/partial 1 0 1 #  temperature considering two directions
+
+################ Run minimization 1 ##########################
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+#fix  1  all  box/relax  iso  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   Model_Minimization1.data
+
+#unfix  1
+
+#################Rum minimization 2 ######################
+#Now allow the box to expand/contract in all directions
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  2  all  box/relax  iso  0  vmax  0.001
+
+#dump  2  all  custom 10000 dump.minimization2.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000  10000
+#undump 2
+
+write_data   Model_Minimization2.data
+
+unfix  2
+
+print  "---------- Minimization 2  is done -----------"
+
+
+################# Rum minimization 3 ######################
+#Now allow the box to expand/contract perpendicular to the GB
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  3  all  box/relax  y  0  vmax  0.001
+
+#dump  3  all  custom 10000 dump.minimization3.*.lammps id type x y z c_eatom
+min_style  cg
+minimize  1e-18  1e-18  10000  10000
+#undump 3
+
+write_data   Model_Minimization3.data
+
+unfix  3
+
+print  "---------- Minimization 3  is done -----------"
+
+
+########################### Relaxation ################################ 
+# ### Step1:  release the pressure in all direction, let the model expands 
+
+velocity  all create ${Temp} 233333 dist gaussian units box 
+
+reset_timestep 0
+
+timestep 0.001
+thermo  100
+thermo_style custom step temp pe press pxx pyy pzz
+
+dump  1  all  custom  10000  dump_relax1_${Temp}K.*.lammpstrj  id  type x y z  c_eatom 
+
+fix  1  all  npt  temp  ${Temp}  ${Temp}  0.1  iso 0 0 1   #Tdamp=100*dt; Pdamp=1000*dt
+run  ${relax_step1}
+
+unfix 1
+undump 1
+
+write_data  Model_Relaxed1.data
+
+print  "---------- 全方位驰豫晶界已完成 -----------"
+
+# ### Step2:  release the pressure in GB direction 
+
+reset_timestep 0
+
+timestep 0.001
+thermo  100
+thermo_style custom step temp pe press pxx pyy pzz
+
+dump  1  all  custom  10000  dump_relax2_${Temp}K.*.lammpstrj  id  type x y z  c_eatom 
+
+fix  1  all  npt  temp  ${Temp}  ${Temp}  0.1  y  0 0 1   #Tdamp=100*dt; Pdamp=1000*dt
+run  ${relax_step2}
+
+unfix 1
+undump 1
+
+write_data  Model_Relaxed2.data
+
+print  "---------- 补充驰豫晶界已完成 -----------"
+
+
+###Store final cell length for strain calculation
+variable tmpy equal ly
+variable L0 equal ${tmpy}
+print  "Initial length, L0 = ${L0}"
+
+########################### 拉伸晶界 ################################ 
+
+reset_timestep 0
+
+### In units metal, pressure is in [bars]; p2, p3, p4 are in GPa
+variable      deltaL  equal  (ly-${L0})
+variable      p1  equal  v_deltaL
+variable      p2  equal  -pxx/10000
+variable      p3  equal  -pyy/10000
+variable      p4  equal  -pzz/10000
+variable      strainy equal v_deltaL/${L0}
+fix def1 all print 100 "${strainy} ${p3}" file Tensile_data.txt screen no
+
+###display thermo message
+thermo 100
+thermo_style custom step temp pe  lx  ly  lz  press  pxx  pyy  pzz v_strainy v_p2 v_p3 v_p4 
+
+dump 1 all custom 1000 dump_tensile.*.lammps id type x y z c_eatom  & 
+c_perstress[1] c_perstress[2] c_perstress[3] c_perstress[4] c_perstress[5] c_perstress[6] 
+
+fix 1 all npt temp ${Temp} ${Temp} 0.1 x 0 0 1 z 0 0 1 drag 0.2
+fix_modify	1 temp new2d
+
+fix 2 all deform 1 y erate ${eng_rate} units box remap x
+
+run ${tensile_step}
+write_restart		Model-tensile.restart
+write_data		Model-tensile.data
+
+undump 1
+unfix  1
+unfix  2
+
+print "-------------- current strain = ${strainy}-----------------"
+
