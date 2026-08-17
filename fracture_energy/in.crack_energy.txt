@@ -1,0 +1,124 @@
+# 计算断裂能密度（mJ/m2）
+# Calculate grain boundary excess properties, according to "10.1103/PhysRevMaterials.2.093603"
+# .data file is generated from other in.file
+# Created by Fusheng Tan (tanfusheng@hnu.edu.cn), 2020-05-29
+# Modified by Fusheng Tan (tanfs6896@163.com), 2026-04-03
+
+### Initialization 
+units  metal
+dimension  3
+boundary  p  p  p 
+atom_style  atomic
+neighbor  6.0  bin    #check the bin to see if the result is convergent
+neigh_modify  delay  5  check  yes
+
+#---------------------- Create GB with different [hkl](mno) --------------------      
+read_data	WRe_SGMC_Model_Seg.data
+
+variable		latconst  equal  3.16
+
+variable   sizey  equal  yhi-ylo
+
+variable   half_y   equal   ${sizey}*0.5  # 晶界位置
+
+#----------------------  Model  --------------------      
+region upper  block  INF  INF   ${half_y}  INF  INF  INF  units  box
+region lower  block  INF  INF  INF   ${half_y}  INF  INF  units  box
+
+group  upper region upper
+group  lower region lower
+
+########### Interatomic potential #################
+pair_style     eam/alloy
+pair_coeff     *  *  WRe_Bonny2017.eam.alloy  W  Re
+
+########### displace atoms or delete atoms ##############
+
+variable atomic_distance equal sqrt(3)/2*${latconst}  # BCC晶格的最近邻原子间距
+variable del_cutoff equal  0.65*${atomic_distance}
+
+#displace_atoms  upper  move  0  0  0  units  lattice  # 固定上层晶粒，以确保晶界位置不变（“零位移”本质是固定上层晶粒的变通方案）
+#delete_atoms  overlap  ${del_cutoff}  lower  upper	 # 删除组间重叠原子
+delete_atoms  overlap  ${del_cutoff}  all  all	 # 删除组间重叠原子
+
+############### Setting ##################
+compute  csym  all  centro/atom  bcc
+compute  pe_atom  all  pe/atom
+compute  pe_all  all  reduce  sum  c_pe_atom
+
+### 弛豫晶界
+################ Run minimization ##########################
+reset_timestep  0
+thermo  100
+thermo_style  custom  step  pe  lx  ly  lz  press  pxx  pyy  pzz
+
+fix  1  all  box/relax  iso  0  vmax  0.001
+
+#dump  1  all  custom 10000 dump.minimization1.*.lammps id type x y z c_csym  c_pe_atom
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+#undump  1
+
+write_data   Model_minimization1.data
+
+unfix  1
+
+#----------------------------- 计算势能 ------------------------------------
+
+timestep  0.001
+thermo  100
+thermo_style custom temp pe  c_pe_all
+
+run 0
+
+variable		pe_before_crack_allv	equal	c_pe_all						# 将compute计算出来的模型总势能 赋予变量 pe_before_crack_allv
+variable		peall_before_crack	equal	${pe_before_crack_allv}		# 将该时刻的值记录下来，作为晶界断裂前总势能
+
+
+###################### 分离晶界面，形成断裂面 ##################
+change_box   all  y  delta  -40  40  boundary  p  f  p
+
+displace_atoms	upper	move  0  20  0  units box
+displace_atoms	lower	move  0  -20  0  units box
+
+### Run minimization 3
+
+fix  2  all  box/relax  x  0   z  0 vmax  0.001
+
+min_style  cg
+minimize  1e-18  1e-18  10000 10000
+
+write_data   Model_minimization3.data
+
+unfix  2
+
+#----------------------------- 计算势能 ------------------------------------
+timestep  0.001
+thermo  100
+thermo_style custom temp pe  c_pe_all
+
+run 0
+
+variable		pe_after_crack_allv	equal	c_pe_all						# 将compute计算出来的模型总势能 赋予变量 pe_after_crack_allv
+variable		peall_after_crack	equal	${pe_after_crack_allv}		# 将该时刻的值记录下来，作为晶界断裂后总势能
+
+
+#------------------------ 计算能量 ----------------------------
+variable		Cf			equal	1.60217657e-16			#是eV与mJ的倍数
+variable		GBarea2		equal	2*(lx*lz)*(1e-20)			#将面积单位化为m2。注意，如果计算总模型，由于有两个晶界，面积要乘以2
+variable		E_before_crack	equal	${peall_before_crack}*${Cf}		#计算断裂前总能量
+variable		E_after_crack		equal	${peall_after_crack}*${Cf}				#计算断裂后总能量
+variable		E_crack		equal	(${E_after_crack}-${E_before_crack})/${GBarea2}		#计算断裂能
+
+#---------------------------- 打印结果 ----------------------------
+print " ------------  total pe before crack = ${E_before_crack}  mJ/m2------------;"
+print " ------------  total pe after crack = ${E_after_crack} mJ/m2------------;"
+print " ------------  crack energy = ${E_crack} mJ/m2------------;"
+
+print "%%total pe before crack = ${E_before_crack}  mJ/m2;"
+print "%%total pe after crack = ${E_after_crack}  mJ/m2;"
+print "%%GB_crack_energy = ${E_crack}  mJ/m2;"
+
+
+
+
